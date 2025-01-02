@@ -78,6 +78,10 @@ async def desligar_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Receber mídias enviadas pelo usuário
 async def receber_midia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Verificar se a mensagem é de um chat privado
+    if update.message.chat.type != "private":
+        return  # Ignorar mensagens que não sejam de chat privado
+
     cursor.execute("SELECT is_active FROM bot_status WHERE id = 1")
     is_active = cursor.fetchone()[0]
 
