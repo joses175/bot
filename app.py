@@ -10,13 +10,14 @@ from telegram.ext import (
     filters
 )
 
+import os
+
 # ------------------------------
 # Configurações
 # ------------------------------
 # Coloque seu token diretamente aqui (atenção: evite expor esse token em produção)
-BOT_TOKEN = "7036731628:AAGbON5-PPN6vYi656Mcoo0oCgGZMS0oYRs"
-ADMIN_ID = 6460184219
-
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 # Configuração de logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
