@@ -1,250 +1,248 @@
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+import asyncio
+import logging
 import html
-import sqlite3
-
-# Configuração inicial do banco de dados
-conn = sqlite3.connect('bot_data.db', check_same_thread=False)
-cursor = conn.cursor()
-
-# Criar tabelas caso não existam
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS media (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    username TEXT,
-    media_type TEXT,
-    media_file_id TEXT,
-    caption TEXT,
-    status TEXT DEFAULT 'pending',
-    rejection_reason TEXT
+from telegram import Update, InputMediaPhoto, InputMediaVideo
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
 )
-''')
 
-cursor.execute('''
-CREATE TABLE IF NOT EXISTS bot_status (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    is_active INTEGER DEFAULT 1
-)
-''')
-
-# Inserir valor padrão na tabela bot_status (se não existir)
-cursor.execute("INSERT OR IGNORE INTO bot_status (id, is_active) VALUES (1, 1)")
-conn.commit()
-
-# IDs fixos
+# ------------------------------
+# Configurações
+# ------------------------------
+# Coloque seu token diretamente aqui (atenção: evite expor esse token em produção)
+BOT_TOKEN = "7036731628:AAGbON5-PPN6vYi656Mcoo0oCgGZMS0oYRs"
 ADMIN_ID = 6460184219
-GROUP_ID = -1002424564273
-BOT_USERNAME = "Anonimas175_bot"  # Substituir pelo username do seu bot (sem @)
 
-# Função para tratar caracteres de forma segura
-def safe_escape(text):
-    if text:
-        return html.escape(text).encode("utf-16", "surrogatepass").decode("utf-16")
-    return ""
+# Configuração de logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ------------------------------
+# Funções Auxiliares
+# ------------------------------
+def safe_escape(text: str) -> str:
+    """
+    Escapa caracteres especiais de forma segura.
+    """
+    try:
+        return html.escape(text).encode("utf-16", "surrogatepass").decode("utf-16") if text else ""
+    except Exception as e:
+        logger.error(f"Erro ao escapar texto: {e}")
+        return "[Conteúdo não legível]"
+
+async def notificar_erro(context: ContextTypes.DEFAULT_TYPE, error: Exception, user_id: int = None) -> None:
+    """
+    Notifica o administrador em caso de erro.
+    """
+    error_message = (
+        f"❌ <b>Erro Detectado:</b>\n\n"
+        f"<b>Detalhes:</b> {error}\n"
+        f"<b>Usuário:</b> {user_id or 'Desconhecido'}"
+    )
+    try:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=error_message, parse_mode="HTML")
+    except Exception as e:
+        logger.critical(f"Erro ao notificar o admin: {e}")
+
+async def enviar_info_usuario(user_id: int, user_name: str, username: str, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Envia informações da nova interação para o administrador.
+    """
+    user_info = (
+        f"👤 <b>Nova interação:</b>\n\n"
+        f"🔹 <b>ID do Usuário:</b> <code>{user_id}</code>\n"
+        f"🔹 <b>Nome:</b> {user_name}\n"
+        f"🔹 <b>Username:</b> @{username if username != 'N/A' else 'N/A'}"
+    )
+    await context.bot.send_message(chat_id=ADMIN_ID, text=user_info, parse_mode="HTML")
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Captura e registra erros não tratados.
+    """
+    logger.error("Exceção não tratada:", exc_info=context.error)
+    error_msg = "⚠️ Ocorreu um erro inesperado. Tente novamente mais tarde."
+    if update and isinstance(update, Update):
+        await update.effective_message.reply_text(error_msg)
+    await notificar_erro(context, context.error)
+
+# ------------------------------
+# Handlers de Mensagens
+# ------------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Responde ao comando /start.
+    """
     welcome_message = (
-        "👋 <b>Bem-vindo!</b>\n\n"
-        "📋 <b>Como funciona:</b>\n"
-        "1️⃣ Envie uma única mídia (foto ou vídeo) por vez.\n"
-        "2️⃣ A mídia será analisada por um administrador.\n"
-        "3️⃣ Após aprovação, será enviada ao grupo.\n\n"
-        "🔒 <b>Todos os envios são 100% anônimos!</b> Ninguém saberá quem enviou a mídia.\n\n"
+        "👋 <b>Olá, seja bem-vindo(a)!</b>\n\n"
+        "❓ <b>Deseja enviar uma mensagem anônima?</b>\n\n"
+        "🔒 <b>Sua identidade está completamente protegida!</b>\n"
+        "📸 Envie fotos, vídeos ou GIFs\n"
+        "⚠️ Botões e legendas serão removidos automaticamente"
     )
     await update.message.reply_text(welcome_message, parse_mode="HTML")
 
-# Função para ligar o bot
-async def ligar_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cursor.execute("UPDATE bot_status SET is_active = 1 WHERE id = 1")
-    conn.commit()
-    await context.bot.send_message(
-        GROUP_ID, 
-        "🚦 O bot foi <b>ligado</b>. O envio de mídias está habilitado!", 
-        parse_mode="HTML"
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Responde ao comando /help com instruções de uso.
+    """
+    help_message = (
+        "ℹ️ <b>Como usar o Bot Anônimo</b>\n\n"
+        "1. Use o comando /start para iniciar.\n"
+        "2. Envie uma mensagem de texto ou mídia (foto, vídeo, GIF).\n"
+        "3. Sua mensagem será encaminhada ao administrador de forma anônima.\n"
+        "4. Se enviar mídia, as legendas serão removidas e seu conteúdo será agrupado."
     )
-    await update.message.reply_text("✅ O bot foi ligado com sucesso!")
+    await update.message.reply_text(help_message, parse_mode="HTML")
 
-# Função para desligar o bot
-async def desligar_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    cursor.execute("UPDATE bot_status SET is_active = 0 WHERE id = 1")
-    conn.commit()
-    await context.bot.send_message(
-        GROUP_ID, 
-        "🚦 O bot foi <b>desligado</b>. O envio de mídias está temporariamente desabilitado!", 
-        parse_mode="HTML"
-    )
-    await update.message.reply_text("✅ O bot foi desligado com sucesso!")
+async def receber_texto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Processa mensagens de texto, enviando uma cópia para o administrador e fazendo echo para o usuário.
+    """
+    try:
+        user_id = update.message.chat_id
+        user_name = update.message.from_user.first_name or "N/A"
+        username = update.message.from_user.username or "N/A"
+        mensagem = update.message.text
 
-# Receber mídias enviadas pelo usuário
-async def receber_midia(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Verificar se a mensagem é de um chat privado
-    if update.message.chat.type != "private":
-        return  # Ignorar mensagens que não sejam de chat privado
-
-    cursor.execute("SELECT is_active FROM bot_status WHERE id = 1")
-    is_active = cursor.fetchone()[0]
-
-    if not is_active:
-        await update.message.reply_text("⚠️ O envio de mídias está temporariamente desabilitado. Tente novamente mais tarde.")
-        return
-
-    user_id = update.message.chat_id
-    username = safe_escape(update.message.from_user.username or "Usuário sem username")
-    first_name = safe_escape(update.message.from_user.first_name or "Usuário sem nome")
-    caption = safe_escape(update.message.caption or "")
-
-    # Verificar se é foto ou vídeo
-    if update.message.photo:
-        media_type = "photo"
-        media_file_id = update.message.photo[-1].file_id
-    elif update.message.video:
-        media_type = "video"
-        media_file_id = update.message.video.file_id
-    else:
-        await update.message.reply_text("Por favor, envie uma foto ou vídeo válido.")
-        return
-
-    # Salvar a mídia no banco de dados
-    cursor.execute(
-        "INSERT INTO media (user_id, username, media_type, media_file_id, caption) VALUES (?, ?, ?, ?, ?)",
-        (user_id, username, media_type, media_file_id, caption),
-    )
-    conn.commit()
-    media_id = cursor.lastrowid
-
-    # Enviar informações ao administrador
-    await context.bot.send_message(
-        ADMIN_ID,
-        text=(
-            f"📩 <b>Nova mídia recebida para análise (envio anônimo):</b>\n\n"
-            f"🔑 <b>UserID:</b> <code>{user_id}</code>\n"
-            f"👤 <b>Username:</b> @{username}\n"
-            f"🖋️ <b>Nome:</b> {first_name}\n"
-            f"🔗 <b>Mídia ID:</b> <code>{media_id}</code>\n"
-            f"{f'📝 <b>Legenda:</b> {caption}' if caption else ''}\n"
-            "⚠️ <b>Envio anônimo:</b> Ninguém saberá quem enviou."
-        ),
-        parse_mode="HTML",
-    )
-
-    # Criar botões de aprovação/reprovação
-    buttons = [
-        [
-            InlineKeyboardButton("✅ Aprovar", callback_data=f"aprovar_{media_id}"),
-            InlineKeyboardButton("❌ Reprovar", callback_data=f"reprovar_{media_id}")
-        ]
-    ]
-
-    # Enviar a mídia para o administrador
-    if media_type == "photo":
-        await context.bot.send_photo(
-            ADMIN_ID,
-            media_file_id,
-            caption=f"📷 <b>Foto enviada para análise</b>\n\n{f'📝 <b>Legenda:</b> {caption}' if caption else ''}",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(buttons),
+        mensagem_info = (
+            f"📩 <b>Nova mensagem recebida:</b>\n\n"
+            f"🔹 <b>ID do Usuário:</b> <code>{user_id}</code>\n"
+            f"🔹 <b>Nome:</b> {user_name}\n"
+            f"🔹 <b>Username:</b> @{username if username != 'N/A' else 'N/A'}\n\n"
+            f"💬 <b>Mensagem:</b>\n{safe_escape(mensagem)}"
         )
-    elif media_type == "video":
-        await context.bot.send_video(
-            ADMIN_ID,
-            media_file_id,
-            caption=f"🎥 <b>Vídeo enviado para análise</b>\n\n{f'📝 <b>Legenda:</b> {caption}' if caption else ''}",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
+        await context.bot.send_message(chat_id=ADMIN_ID, text=mensagem_info, parse_mode="HTML")
+        await update.message.reply_text(mensagem)
+    except Exception as e:
+        await notificar_erro(context, e, user_id=update.message.chat_id)
 
-    # Informar ao usuário que a mídia foi enviada
-    await update.message.reply_text("Sua mídia foi enviada para análise. O envio é anônimo e ninguém saberá quem a enviou.")
+async def receber_midia(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Processa mídias (foto, vídeo, GIF) e as agrupa para envio.
+    """
+    try:
+        user_id = update.message.chat_id
+        user_name = update.message.from_user.first_name or "N/A"
+        username = update.message.from_user.username or "N/A"
+        caption = safe_escape(update.message.caption or "")
 
-# Função para lidar com callbacks de aprovação/reprovação
-async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
+        # Armazenamento do álbum do usuário
+        user_albums = context.user_data.setdefault("albums", {})
+        album = user_albums.setdefault(user_id, {
+            "media": [],
+            "original_captions": [],
+            "timer": None,
+            "user_info_sent": False
+        })
 
-    if data.startswith("aprovar_"):
-        media_id = int(data.split("_")[1])
-        cursor.execute("SELECT user_id, media_file_id, media_type, caption FROM media WHERE id = ?", (media_id,))
-        media = cursor.fetchone()
-
-        if media:
-            user_id, media_file_id, media_type, caption = media
-
-            # Construir a legenda final para o grupo
-            group_caption = f"{safe_escape(caption)}\n\n📷 #envioanonimo\n @{BOT_USERNAME}" if caption else f"📷 #envioanonimo\n @{BOT_USERNAME}"
-
-            # Enviar a mídia para o grupo com a legenda final
-            if media_type == "photo":
-                await context.bot.send_photo(GROUP_ID, media_file_id, caption=group_caption, parse_mode="HTML")
-            elif media_type == "video":
-                await context.bot.send_video(GROUP_ID, media_file_id, caption=group_caption, parse_mode="HTML")
-
-            # Atualizar status no banco de dados
-            cursor.execute("UPDATE media SET status = 'approved' WHERE id = ?", (media_id,))
-            conn.commit()
-
-            # Informar ao administrador
-            await query.message.reply_text("✅ Aprovado: A mídia foi enviada ao grupo.")
-
-            # Notificar o usuário
-            await context.bot.send_message(
-                user_id,
-                "✅ Sua mídia foi aprovada e enviada ao grupo. O envio foi anônimo e ninguém saberá quem a enviou.",
+        # Processar mídia conforme o tipo
+        if update.message.photo:
+            media = InputMediaPhoto(media=update.message.photo[-1].file_id)
+            album["original_captions"].append(caption)
+        elif update.message.video:
+            media = InputMediaVideo(media=update.message.video.file_id)
+            album["original_captions"].append(caption)
+        elif update.message.animation:
+            # Processa GIF separadamente (sem agrupar)
+            await context.bot.send_animation(
+                chat_id=ADMIN_ID,
+                animation=update.message.animation.file_id,
+                caption=caption
             )
-
-    elif data.startswith("reprovar_"):
-        media_id = int(data.split("_")[1])
-        context.user_data["awaiting_reason"] = media_id
-        await query.message.reply_text("❌ Envie o motivo da reprovação agora como uma mensagem de texto.")
-
-# Receber motivo de reprovação
-async def receber_motivo_reprovacao(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message is None or update.message.chat_id != ADMIN_ID:
-        return  # Ignorar mensagens fora do contexto ou de outros usuários
-
-    media_id = context.user_data.get("awaiting_reason")
-
-    if media_id:
-        motivo = safe_escape(update.message.text)
-        cursor.execute("SELECT user_id FROM media WHERE id = ?", (media_id,))
-        media = cursor.fetchone()
-
-        if media:
-            user_id = media[0]
-            cursor.execute("UPDATE media SET status = 'rejected', rejection_reason = ? WHERE id = ?", (motivo, media_id))
-            conn.commit()
-
-            # Informar ao administrador
-            await update.message.reply_text("❌ Rejeição registrada e enviada ao usuário.")
-
-            # Notificar o usuário
-            await context.bot.send_message(
-                user_id,
-                f"❌ Sua mídia foi reprovada.\n\n📝 <b>Motivo:</b> {motivo}\n\n⚠️ <b>Envio Anônimo:</b> Ninguém sabe quem enviou.",
-                parse_mode="HTML",
+            await context.bot.send_animation(
+                chat_id=user_id,
+                animation=update.message.animation.file_id,
+                caption=None
             )
-            del context.user_data["awaiting_reason"]
+            return
         else:
-            await update.message.reply_text("⚠️ Mídia não encontrada para registrar o motivo.")
+            await update.message.reply_text("⚠️ Formato não suportado!")
+            return
 
-    else:
-        await update.message.reply_text("⚠️ Não há nenhuma reprovação pendente no momento.")
+        album["media"].append(media)
 
-# Configuração principal
-def main():
-    print("Inicializando o bot...")
-    application = Application.builder().token("7702255202:AAHcxWp63HOFJgJpkYEtiGxHmFvx08nBpmY").build()
+        # Cancelar timer anterior, se existir, para evitar envios duplicados
+        if album["timer"]:
+            album["timer"].cancel()
+        album["timer"] = asyncio.create_task(
+            enviar_album(user_id, user_name, username, album, context)
+        )
+    except Exception as e:
+        await notificar_erro(context, e, user_id=update.message.chat_id)
 
-    # Handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("ligar", ligar_bot, filters.User(ADMIN_ID)))
-    application.add_handler(CommandHandler("desligar", desligar_bot, filters.User(ADMIN_ID)))
-    application.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO, receber_midia))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receber_motivo_reprovacao))
-    application.add_handler(CallbackQueryHandler(callback_query_handler))
+async def enviar_album(user_id: int, user_name: str, username: str, album: dict, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Aguarda um breve intervalo e envia o álbum (agrupamento de mídias) para o administrador e para o usuário.
+    """
+    await asyncio.sleep(3)
+    if album["media"]:
+        try:
+            admin_media = []
+            user_media = []
+            
+            for i, media in enumerate(album["media"]):
+                admin_caption = album["original_captions"][i] if i == 0 else None
+                if isinstance(media, InputMediaPhoto):
+                    admin_media.append(InputMediaPhoto(
+                        media=media.media,
+                        caption=admin_caption
+                    ))
+                    user_media.append(InputMediaPhoto(media=media.media))
+                else:
+                    admin_media.append(InputMediaVideo(
+                        media=media.media,
+                        caption=admin_caption
+                    ))
+                    user_media.append(InputMediaVideo(media=media.media))
+                    
+            # Enviar informações do usuário (apenas uma vez)
+            if not album["user_info_sent"]:
+                await enviar_info_usuario(user_id, user_name, username, context)
+                album["user_info_sent"] = True
 
-    # Iniciar bot
-    application.run_polling()
+            # Envia os grupos de mídia em chunks (máximo 10 por envio)
+            for chunk in [admin_media[i:i+10] for i in range(0, len(admin_media), 10)]:
+                await context.bot.send_media_group(chat_id=ADMIN_ID, media=chunk)
+            for chunk in [user_media[i:i+10] for i in range(0, len(user_media), 10)]:
+                await context.bot.send_media_group(chat_id=user_id, media=chunk)
+
+        except Exception as e:
+            await notificar_erro(context, e, user_id=user_id)
+        finally:
+            album["media"].clear()
+            album["original_captions"].clear()
+            album["user_info_sent"] = False
+
+# ------------------------------
+# Função Principal
+# ------------------------------
+def main() -> None:
+    """
+    Configuração e inicialização do bot.
+    """
+    logger.info("🤖 Bot Anônimo Iniciado")
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    # Registrando handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receber_texto))
+    app.add_handler(MessageHandler(
+        filters.PHOTO | filters.VIDEO | filters.ANIMATION,
+        receber_midia
+    ))
+    app.add_error_handler(error_handler)
+
+    # Inicia o polling
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
